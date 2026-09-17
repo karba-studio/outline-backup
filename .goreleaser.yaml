@@ -1,0 +1,111 @@
+version: 2
+project_name: outline-backup
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: outline-backup
+    main: ./cmd/outline-backup
+    binary: outline-backup
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/karba-studio/outline-backup/internal/version.Version={{.Version}}
+      - -X github.com/karba-studio/outline-backup/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/karba-studio/outline-backup/internal/version.Date={{.Date}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - docs/**/*
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
+
+brews:
+  - name: outline-backup
+    repository:
+      owner: karba-studio
+      name: homebrew-tap
+    homepage: https://github.com/karba-studio/outline-backup
+    description: Back up and restore Outline wikis whose attachments live in MinIO
+    license: MIT
+    # restic does the encryption and retention; the tool drives it.
+    dependencies:
+      - name: restic
+    test: |
+      system "#{bin}/outline-backup", "version"
+
+scoops:
+  - repository:
+      owner: karba-studio
+      name: scoop-bucket
+      branch: main
+    homepage: https://github.com/karba-studio/outline-backup
+    description: Back up and restore Outline wikis whose attachments live in MinIO
+    license: MIT
+
+dockers:
+  - id: amd64
+    ids: [outline-backup]
+    goarch: amd64
+    dockerfile: Dockerfile.release
+    use: buildx
+    image_templates:
+      - ghcr.io/karba-studio/outline-backup:{{ .Version }}-amd64
+      - ghcr.io/karba-studio/outline-backup:latest-amd64
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --label=org.opencontainers.image.source=https://github.com/karba-studio/outline-backup
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.licenses=MIT
+
+  - id: arm64
+    ids: [outline-backup]
+    goarch: arm64
+    dockerfile: Dockerfile.release
+    use: buildx
+    image_templates:
+      - ghcr.io/karba-studio/outline-backup:{{ .Version }}-arm64
+      - ghcr.io/karba-studio/outline-backup:latest-arm64
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.source=https://github.com/karba-studio/outline-backup
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.licenses=MIT
+
+# One tag that resolves to the right architecture, so `docker pull` works the
+# same on an Intel server and an Apple Silicon laptop.
+docker_manifests:
+  - name_template: ghcr.io/karba-studio/outline-backup:{{ .Version }}
+    image_templates:
+      - ghcr.io/karba-studio/outline-backup:{{ .Version }}-amd64
+      - ghcr.io/karba-studio/outline-backup:{{ .Version }}-arm64
+  - name_template: ghcr.io/karba-studio/outline-backup:latest
+    image_templates:
+      - ghcr.io/karba-studio/outline-backup:latest-amd64
+      - ghcr.io/karba-studio/outline-backup:latest-arm64

@@ -1,0 +1,24 @@
+# Release image: goreleaser has already built the binary and puts it in the
+# build context, so there is nothing to compile here.
+#
+# The from-source build lives in ./Dockerfile, for `docker build .` by hand.
+FROM alpine:3.22
+
+RUN apk add --no-cache ca-certificates tzdata
+
+# restic does the encryption, deduplication and retention.
+COPY --from=restic/restic:latest /usr/bin/restic /usr/local/bin/restic
+# The docker CLI: Postgres is dumped through its container rather than over TCP,
+# so the client version can never disagree with the server.
+COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
+
+COPY outline-backup /usr/local/bin/outline-backup
+
+ENV OMB_CONFIG=/config/config.json
+VOLUME ["/config", "/staging"]
+
+# NOTE: reaching the stack requires the Docker socket, which is equivalent to
+# root on the host. On a machine where you already run the stack yourself, the
+# native binary is the smaller blast radius. See docs/INSTALL.md.
+ENTRYPOINT ["/usr/local/bin/outline-backup"]
+CMD ["agent"]

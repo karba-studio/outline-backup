@@ -1,0 +1,21 @@
+# Secrets and live configuration. `init` writes these; they never belong in git.
+secrets.env
+config.json
+omb/
+!config.example.json
+
+# Working area for an in-progress backup or restore.
+staging/
+restore-*/
+
+# Build output
+/dist/
+/outline-backup
+/outline-backup.exe
+*.exe
+*.test
+
+# Editors and OS noise
+.DS_Store
+.idea/
+.vscode/

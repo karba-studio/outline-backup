@@ -49,6 +49,11 @@ brews:
     repository:
       owner: karba-studio
       name: homebrew-tap
+    # Publishing the formula needs a token that can write to ANOTHER repository,
+    # which GITHUB_TOKEN cannot. Without it, skip this step instead of failing
+    # the release: binaries and images are the release, the tap is a
+    # convenience, and a first release should not require the tap to exist yet.
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
     homepage: https://github.com/karba-studio/outline-backup
     description: Back up and restore Outline wikis whose attachments live in MinIO
     license: MIT
@@ -63,6 +68,8 @@ scoops:
       owner: karba-studio
       name: scoop-bucket
       branch: main
+    # Same reasoning as the Homebrew tap above.
+    skip_upload: '{{ if eq (index .Env "SCOOP_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
     homepage: https://github.com/karba-studio/outline-backup
     description: Back up and restore Outline wikis whose attachments live in MinIO
     license: MIT

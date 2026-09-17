@@ -1,5 +1,41 @@
 # Backblaze B2 setup
 
+## 0. The three things a restore needs
+
+Before any of the clicking below, know what you are actually collecting. To
+rebuild a wiki on a machine that has never seen this one, you need exactly
+three strings per instance:
+
+| | What it is | Where it comes from | Where it lives afterwards |
+|---|---|---|---|
+| **Key ID** | B2 application key ID | you create it in step 2 | `secrets.env` on the server |
+| **Application key** | its secret half, shown once | step 2 | `secrets.env` on the server |
+| **Encryption password** | the key that decrypts the backups | **you invent it**, once, in `init` | `secrets.env` on the server **and somewhere off the server** |
+
+The first two are replaceable: revoke a leaked key in the B2 console and make a
+new one. The third is not. It is the password of the restic repository, and it
+is what makes the contents of the bucket meaningless to whoever gets into
+Backblaze. Nobody — not Backblaze, not this tool, not me — can recover a
+repository whose password is gone. The snapshots simply stay ciphertext forever.
+
+So: generate it long and random, let `init` write it into `secrets.env`, and
+**store a second copy somewhere that does not depend on the server surviving** —
+a password manager, or paper in a drawer. If the only copy of that password is
+on the machine the backups exist to replace, you do not have backups.
+
+```sh
+# a password worth using, 32 random bytes
+openssl rand -base64 32
+```
+
+In the configuration it is never written in plain: `passwordEnv` names an
+environment variable, and the value sits in `secrets.env` with mode `0600`
+beside the config. One password per destination, so the two wikis get two
+different passwords — that is the point of two accounts, and it holds for the
+encryption too.
+
+---
+
 One bucket per Outline instance. Separate **accounts** are worth it when the
 wikis belong to different businesses: a compromised login, a leaked key or a
 billing problem then reaches exactly one of them. B2 accounts are keyed to an
@@ -63,12 +99,20 @@ early, so pick a lock period you are happy to pay for.
 
 ## 4. Cost
 
-B2 is $6/TB/month, with the first 10 GB free **per account**. Two accounts means
-20 GB free between them. Snapshots are deduplicated, so daily backups of mostly
-unchanged attachments add very little after the first one.
+B2 is $6.95/TB/month, with the first 10 GB free **per account** — two accounts
+means 20 GB free between them. Snapshots are deduplicated, so daily backups of
+mostly unchanged attachments add very little after the first one.
 
 A wiki with a few hundred MB of attachments and a year of daily history stays
 comfortably inside the free tier.
+
+Two details that matter for backups specifically: there is **no minimum storage
+duration**, so retention can prune a snapshot the day after it was written
+without an early-deletion charge, and egress is free up to 3× the average
+monthly stored amount. A restore pulls down roughly one snapshot's worth, so it
+is free in practice; beyond that threshold it is $0.01/GB.
+
+Prices checked 2026-09-17 against backblaze.com/cloud-storage/pricing.
 
 ## 5. Check it
 

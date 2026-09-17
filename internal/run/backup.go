@@ -28,6 +28,15 @@ const (
 	ManifestTxt = "MANIFEST.txt"
 )
 
+// Dump file names inside DirDatabase. These are roles, not database names: the
+// restore target decides what each one is called when it is loaded back, so a
+// snapshot of "outline_business" can be restored into "outline_business_test"
+// without the tool quietly writing to the production name it came from.
+const (
+	RoleInstance = "instance"
+	RoleKeycloak = "keycloak"
+)
+
 // Copy is the outcome of shipping one snapshot to one destination.
 type Copy struct {
 	Destination string
@@ -89,14 +98,18 @@ func Backup(ctx context.Context, c *cfg.Config, in *cfg.Instance, out io.Writer)
 		return nil, fmt.Errorf("postgres is not ready: %w", err)
 	}
 
-	databases := []string{in.Database}
+	// Dumps are named by ROLE, not by source database name. That is what lets a
+	// restore put each dump where the target configuration says it goes, instead
+	// of recreating whatever name the source host happened to use — which would
+	// silently write to a live database when restoring into a scratch one.
+	databases := []struct{ db, role string }{{in.Database, RoleInstance}}
 	if in.KeycloakDatabase != "" {
-		databases = append(databases, in.KeycloakDatabase)
+		databases = append(databases, struct{ db, role string }{in.KeycloakDatabase, RoleKeycloak})
 	}
-	for _, db := range databases {
-		dest := filepath.Join(staging, DirDatabase, db+".dump")
-		logf("  dumping database %s", db)
-		n, err := engine.Dump(ctx, db, dest)
+	for _, d := range databases {
+		dest := filepath.Join(staging, DirDatabase, d.role+".dump")
+		logf("  dumping database %s", d.db)
+		n, err := engine.Dump(ctx, d.db, dest)
 		if err != nil {
 			return nil, err
 		}
@@ -239,14 +252,19 @@ func writeManifest(ctx context.Context, staging string, c *cfg.Config, in *cfg.I
 
 	fmt.Fprintf(&b, `
 layout:
-  %s/   pg_dump -Fc archives, restore with pg_restore
-  %s/     attachment objects, keys are the paths below this directory
-  %s/      .env and other stack files, if they were configured
+  %[1]s/%[4]s.dump   this wiki's database, pg_dump -Fc
+  %[1]s/%[5]s.dump   the Keycloak database, if it was included
+  %[2]s/             attachment objects, keys are the paths below this directory
+  %[3]s/             .env and other stack files, if they were configured
+
+Dumps are named by role, not by their original database name: the restore
+target decides what each is called when it is loaded back. The names they came
+from are recorded above, for reference.
 
 to restore this snapshot onto a fresh host:
-  outline-backup restore --instance %s --snapshot <id>
+  outline-backup restore --instance %[6]s --snapshot <id>
 see docs/RESTORE.md in the repository for the full runbook.
-`, DirDatabase, DirAssets, DirStack, in.Name)
+`, DirDatabase, DirAssets, DirStack, RoleInstance, RoleKeycloak, in.Name)
 
 	return os.WriteFile(filepath.Join(staging, ManifestTxt), []byte(b.String()), 0o600)
 }

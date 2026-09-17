@@ -24,8 +24,9 @@ A README with one line is enough to initialise them.
 - This repository → Settings → Secrets and variables → Actions → New secret,
   named `TAP_GITHUB_TOKEN`.
 
-Without it the release still publishes binaries and container images; only the
-tap and bucket updates are skipped.
+Without it the release still publishes binaries and container images; the tap
+and bucket updates are skipped rather than failing the release, so you can cut
+`v0.1.0` before those two repositories exist and wire them up later.
 
 **3. After the first release, make the container package public.**
 GHCR packages start private even when the repository is public:

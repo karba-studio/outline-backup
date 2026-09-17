@@ -57,8 +57,21 @@ outline-backup restore --instance private --snapshot latest \
   --db-owner outline_private --db-owner-password "<from .env>"
 ```
 
-`--db-owner` creates the owning role if the new Postgres has never seen it.
-Omit it when the role already exists.
+`--db-owner` does three things, in this order: it creates the owning role if the
+new Postgres has never seen it, it makes that role the owner of the target
+database (whether the restore created that database or it was already there),
+and then every table, sequence, view and function is handed to it once the dump
+is loaded.
+
+That last step is not cosmetic. Dumps are loaded with `--no-owner`, so that a
+snapshot from one host can be restored on another where the roles are named
+differently — which leaves everything owned by the superuser doing the restore.
+A wiki whose data is completely intact but whose own role cannot read its tables
+answers every request with **HTTP 500**, and it is not an obvious thing to
+diagnose. Passing `--db-owner` is what prevents that.
+
+Omit it only when the target database is already owned by the right role; the
+ownership pass then hands objects to that existing owner.
 
 It will ask you to type the instance name before overwriting anything. Use
 `--yes` in a script, not at a keyboard.
@@ -100,10 +113,16 @@ second proves the object store and the signed-URL path, the third proves Keycloa
 The layout is deliberately plain, so you are never locked into this tool:
 
 ```
-database/outline_private.dump    pg_restore -d outline_private --clean --if-exists
+database/instance.dump           pg_restore -d <your database> --clean --if-exists
+database/keycloak.dump           the Keycloak database, if it was included
 assets/uploads/<team>/<id>/<f>   keys are the paths below assets/
 stack/.env                       the original environment
 ```
+
+Dumps are named by **role**, not by the database name they came from. That is
+deliberate: the restore target decides where each one goes, so restoring a
+production snapshot into a scratch database cannot reach the production one by
+accident. `MANIFEST.txt` records the original names.
 
 With `--fetch-only` and those two facts you can restore by hand into any
 Postgres and any S3-compatible store.

@@ -90,10 +90,15 @@ func (e *Engine) Restore(ctx context.Context, db, srcFile, owner, ownerPassword 
 	_ = e.Docker.ExecQuiet(ctx, e.Service, "rm", "-f", inside)
 	if err != nil {
 		// pg_restore exits non-zero on warnings too; confirm with a real query.
-		if n, cErr := e.CountTables(ctx, db); cErr == nil && n > 0 {
-			return nil
+		if n, cErr := e.CountTables(ctx, db); cErr != nil || n == 0 {
+			return fmt.Errorf("pg_restore into %s: %w", db, err)
 		}
-		return fmt.Errorf("pg_restore into %s: %w", db, err)
+	}
+
+	// --no-owner above left everything owned by the superuser. Without this the
+	// database is complete and the application still cannot read it.
+	if err := e.reassignToDatabaseOwner(ctx, db); err != nil {
+		return fmt.Errorf("restoring object ownership in %s: %w", db, err)
 	}
 	return nil
 }
@@ -147,20 +152,60 @@ func (e *Engine) ensureRole(ctx context.Context, role, password string) error {
 	return err
 }
 
+// ensureDatabase creates db if it is missing, and in either case makes sure the
+// configured owner really owns it.
+//
+// Applying the owner only at CREATE DATABASE time is not enough: a second
+// restore into a database that already exists would leave the old owner in
+// place, and since reassignToDatabaseOwner hands every object to the *database*
+// owner, --db-owner would then silently do nothing. That is exactly the failure
+// this whole ownership path exists to prevent, so the owner is enforced on
+// every restore rather than only on the first.
 func (e *Engine) ensureDatabase(ctx context.Context, db, owner string) error {
 	exists, err := e.DatabaseExists(ctx, db)
 	if err != nil {
 		return err
 	}
-	if exists {
+	if !exists {
+		stmt := "CREATE DATABASE " + quoteIdent(db)
+		if owner != "" {
+			stmt += " OWNER " + quoteIdent(owner)
+		}
+		_, err = e.psql(ctx, "postgres", stmt)
+		return err
+	}
+	if owner == "" {
 		return nil
 	}
-	stmt := "CREATE DATABASE " + quoteIdent(db)
-	if owner != "" {
-		stmt += " OWNER " + quoteIdent(owner)
+
+	current, err := e.databaseOwner(ctx, db)
+	if err != nil {
+		return err
 	}
-	_, err = e.psql(ctx, "postgres", stmt)
-	return err
+	if current == owner {
+		return nil
+	}
+	_, err = e.psql(ctx, "postgres",
+		"ALTER DATABASE "+quoteIdent(db)+" OWNER TO "+quoteIdent(owner))
+	if err != nil {
+		return fmt.Errorf("changing the owner of database %s from %s to %s: %w",
+			db, current, owner, err)
+	}
+	return nil
+}
+
+// databaseOwner returns the role that owns db.
+func (e *Engine) databaseOwner(ctx context.Context, db string) (string, error) {
+	out, err := e.psql(ctx, "postgres", fmt.Sprintf(
+		"SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='%s'", escapeLiteral(db)))
+	if err != nil {
+		return "", err
+	}
+	owner := strings.TrimSpace(out)
+	if owner == "" {
+		return "", fmt.Errorf("cannot determine the owner of database %s", db)
+	}
+	return owner, nil
 }
 
 func (e *Engine) psql(ctx context.Context, db, sql string) (string, error) {
@@ -179,3 +224,77 @@ func quoteIdent(s string) string {
 func escapeLiteral(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
+
+// reassignToDatabaseOwner gives every object in the public schema to whoever
+// owns the database.
+//
+// pg_restore runs here with --no-owner, so that a dump taken on one host can be
+// loaded on another where the roles have different names. The cost is that
+// every object ends up owned by the role doing the restore — the superuser —
+// and the application's own role can then no longer read its own tables. The
+// symptom is an immediate HTTP 500 from a wiki whose data is perfectly intact,
+// which is a memorably bad way to discover it.
+//
+// The database owner is the right target, and ensureDatabase has already made
+// sure it is the configured one — for a database it just created and for one
+// that was already there.
+func (e *Engine) reassignToDatabaseOwner(ctx context.Context, db string) error {
+	owner, err := e.databaseOwner(ctx, db)
+	if err != nil {
+		return err
+	}
+	_, err = e.psql(ctx, db, fmt.Sprintf(reassignSQL, escapeLiteral(owner)))
+	return err
+}
+
+// reassignSQL takes the target role as a literal, %s, and is deliberately
+// tolerant: objects belonging to an extension cannot be reassigned, and that is
+// not a failure.
+const reassignSQL = `
+DO $omb$
+DECLARE
+  r          record;
+  owner_role text := '%s';
+  stmt       text;
+BEGIN
+  EXECUTE format('ALTER SCHEMA public OWNER TO %%I', owner_role);
+
+  FOR r IN SELECT tablename AS n FROM pg_tables WHERE schemaname='public' LOOP
+    EXECUTE format('ALTER TABLE public.%%I OWNER TO %%I', r.n, owner_role);
+  END LOOP;
+
+  FOR r IN SELECT sequencename AS n FROM pg_sequences WHERE schemaname='public' LOOP
+    EXECUTE format('ALTER SEQUENCE public.%%I OWNER TO %%I', r.n, owner_role);
+  END LOOP;
+
+  FOR r IN SELECT viewname AS n FROM pg_views WHERE schemaname='public' LOOP
+    EXECUTE format('ALTER VIEW public.%%I OWNER TO %%I', r.n, owner_role);
+  END LOOP;
+
+  FOR r IN SELECT matviewname AS n FROM pg_matviews WHERE schemaname='public' LOOP
+    EXECUTE format('ALTER MATERIALIZED VIEW public.%%I OWNER TO %%I', r.n, owner_role);
+  END LOOP;
+
+  FOR r IN
+    SELECT t.typname AS n FROM pg_type t
+    JOIN pg_namespace ns ON ns.oid = t.typnamespace
+    WHERE ns.nspname='public' AND t.typtype IN ('e','d','c')
+      AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.reltype = t.oid)
+  LOOP
+    stmt := format('ALTER TYPE public.%%I OWNER TO %%I', r.n, owner_role);
+    BEGIN EXECUTE stmt; EXCEPTION WHEN OTHERS THEN NULL; END;
+  END LOOP;
+
+  FOR r IN
+    SELECT p.oid::regprocedure AS n FROM pg_proc p
+    JOIN pg_namespace ns ON ns.oid = p.pronamespace
+    WHERE ns.nspname='public'
+      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid=p.oid AND d.deptype='e')
+  LOOP
+    stmt := format('ALTER FUNCTION %%s OWNER TO %%I', r.n, owner_role);
+    BEGIN EXECUTE stmt; EXCEPTION WHEN OTHERS THEN NULL; END;
+  END LOOP;
+
+  EXECUTE format('GRANT ALL ON SCHEMA public TO %%I', owner_role);
+END
+$omb$;`

@@ -113,26 +113,30 @@ func Restore(ctx context.Context, c *cfg.Config, in *cfg.Instance, opt RestoreOp
 		if err := engine.Ping(ctx); err != nil {
 			return nil, fmt.Errorf("postgres is not ready: %w", err)
 		}
-		dumps, err := filepath.Glob(filepath.Join(root, DirDatabase, "*.dump"))
+		// Every database written here is named by the TARGET configuration.
+		// Never by the dump's file name: a snapshot carries the source host's
+		// names, and following those would write to the live database even when
+		// the configuration points somewhere else entirely.
+		plan, err := planDatabases(root, in)
 		if err != nil {
 			return nil, err
 		}
-		if len(dumps) == 0 {
-			return nil, fmt.Errorf("no database dumps found in %s", filepath.Join(root, DirDatabase))
-		}
-		for _, d := range dumps {
-			db := strings.TrimSuffix(filepath.Base(d), ".dump")
+		for _, p := range plan {
+			if p.skipReason != "" {
+				logf("  skipping %s: %s", p.role, p.skipReason)
+				continue
+			}
 			owner, password := "", ""
 			// Only the instance's own database gets the configured owner; the
 			// shared Keycloak dump keeps whatever the dump carries.
-			if db == in.Database {
+			if p.role == RoleInstance {
 				owner, password = opt.DBOwner, opt.DBOwnerPassword
 			}
-			logf("  restoring database %s", db)
-			if err := engine.Restore(ctx, db, d, owner, password); err != nil {
+			logf("  restoring %s dump into database %s", p.role, p.target)
+			if err := engine.Restore(ctx, p.target, p.file, owner, password); err != nil {
 				return nil, err
 			}
-			res.Restored = append(res.Restored, "database:"+db)
+			res.Restored = append(res.Restored, "database:"+p.target)
 		}
 		if n, err := engine.CountTables(ctx, in.Database); err == nil {
 			res.TablesAfter = n
@@ -200,4 +204,78 @@ func findSnapshotRoot(target string) (string, error) {
 			"is this snapshot from a different tool?", target, ManifestTxt)
 	}
 	return found, nil
+}
+
+// dbPlan is one dump and the database the target configuration says it goes to.
+type dbPlan struct {
+	role       string
+	file       string
+	target     string
+	skipReason string
+}
+
+// planDatabases decides where each dump in a snapshot is loaded.
+//
+// The rule is simple and deliberately strict: the snapshot supplies bytes, the
+// configuration supplies names. A dump is only ever written to a database the
+// target configuration names, so restoring into a scratch setup can never reach
+// the production database the snapshot came from.
+func planDatabases(root string, in *cfg.Instance) ([]dbPlan, error) {
+	dir := filepath.Join(root, DirDatabase)
+	entries, err := filepath.Glob(filepath.Join(dir, "*.dump"))
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no database dumps found in %s", dir)
+	}
+
+	byStem := map[string]string{}
+	for _, e := range entries {
+		byStem[strings.TrimSuffix(filepath.Base(e), ".dump")] = e
+	}
+
+	var plan []dbPlan
+
+	// The instance's own database. Snapshots written before dumps were named by
+	// role carry the source database name instead, so fall back to that, and
+	// then to the only non-Keycloak dump present.
+	instanceFile := byStem[RoleInstance]
+	if instanceFile == "" {
+		instanceFile = byStem[in.Database]
+	}
+	if instanceFile == "" {
+		var candidates []string
+		for stem, f := range byStem {
+			if stem != RoleKeycloak && stem != in.KeycloakDatabase {
+				candidates = append(candidates, f)
+			}
+		}
+		if len(candidates) == 1 {
+			instanceFile = candidates[0]
+		}
+	}
+	if instanceFile == "" {
+		return nil, fmt.Errorf("cannot tell which dump in %s holds instance %q; "+
+			"expected %s.dump", dir, in.Name, RoleInstance)
+	}
+	plan = append(plan, dbPlan{role: RoleInstance, file: instanceFile, target: in.Database})
+
+	// Keycloak, only when this configuration says where it goes. Without a
+	// target name there is nowhere safe to put it, and guessing would mean
+	// writing to whatever the source host called it.
+	keycloakFile := byStem[RoleKeycloak]
+	if keycloakFile == "" && in.KeycloakDatabase != "" {
+		keycloakFile = byStem[in.KeycloakDatabase]
+	}
+	if keycloakFile != "" {
+		p := dbPlan{role: RoleKeycloak, file: keycloakFile, target: in.KeycloakDatabase}
+		if in.KeycloakDatabase == "" {
+			p.skipReason = "keycloakDatabase is not set in this configuration, " +
+				"so there is no target to restore it into"
+		}
+		plan = append(plan, p)
+	}
+
+	return plan, nil
 }

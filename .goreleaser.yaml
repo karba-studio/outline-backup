@@ -42,7 +42,14 @@ snapshot:
 changelog:
   sort: asc
   filters:
-    exclude: ["^docs:", "^test:", "^chore:"]
+    # The optional (scope) is not decoration: v0.1.0 shipped with release notes
+    # listing two "docs(b2): ..." commits, because "^docs:" does not match a
+    # Conventional Commit that carries a scope. Anything written as
+    # "docs(readme):" or "chore(ci):" sailed straight through the filter.
+    exclude:
+      - '^docs(\([^)]*\))?:'
+      - '^test(\([^)]*\))?:'
+      - '^chore(\([^)]*\))?:'
 
 brews:
   - name: outline-backup

@@ -37,6 +37,10 @@ of the running Outline container, and asks for the rest.
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 
+A complete, worked setup — Outline and MinIO under Docker Desktop on a Windows
+machine, administered from a Mac over SSH, ending in a nightly scheduled backup
+— is in [docs/WINDOWS-SERVER.md](docs/WINDOWS-SERVER.md).
+
 ---
 
 ## What a backup contains

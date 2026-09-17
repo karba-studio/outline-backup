@@ -99,12 +99,20 @@ early, so pick a lock period you are happy to pay for.
 
 ## 4. Cost
 
-B2 is $6/TB/month, with the first 10 GB free **per account**. Two accounts means
-20 GB free between them. Snapshots are deduplicated, so daily backups of mostly
-unchanged attachments add very little after the first one.
+B2 is $6.95/TB/month, with the first 10 GB free **per account** — two accounts
+means 20 GB free between them. Snapshots are deduplicated, so daily backups of
+mostly unchanged attachments add very little after the first one.
 
 A wiki with a few hundred MB of attachments and a year of daily history stays
 comfortably inside the free tier.
+
+Two details that matter for backups specifically: there is **no minimum storage
+duration**, so retention can prune a snapshot the day after it was written
+without an early-deletion charge, and egress is free up to 3× the average
+monthly stored amount. A restore pulls down roughly one snapshot's worth, so it
+is free in practice; beyond that threshold it is $0.01/GB.
+
+Prices checked 2026-09-17 against backblaze.com/cloud-storage/pricing.
 
 ## 5. Check it
 
